@@ -30,21 +30,3 @@ is the source of those files. This repo only receives pushes.
         └── ...                    ← the other yahboomcar_* packages,
                                       laserscan_to_point_pulisher,
                                       robot_pose_publisher_ros2, and so on
-
-## Sync workflow
-
-On this machine, from the repo root. `sync_from_robot.sh` stays on the
-host and is not part of this repository:
-
-    ./sync_from_robot.sh
-
-That copies `jetson@192.168.0.120:~/yahboomcar_ros2_ws/yahboomcar_ws/src/`
-into `src/` here, commits whatever changed, and pushes branch `master` to
-`git@github.com:ganapetya/savelij.git`.
-
-It does not fetch or pull. A non-fast-forward push stops without changing
-GitHub. Optional message: `./sync_from_robot.sh "why this sync"`.
-
-`build/`, `install/`, and `log/` inside the robot `src` tree are colcon
-output and are left behind. Files matched by `.gitignore` (large model
-files, `src/lk_body/.env`) are copied onto this machine and are not committed.
