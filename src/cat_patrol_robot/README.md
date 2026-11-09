@@ -1,7 +1,7 @@
-# Cat Patrol Robot
+# Savelij
 
 <p align="left">
-  <img src="images/botph.jpeg" width="200" alt="The robot, side view" />
+  <img src="../images/savelij.jpg" width="200" alt="The robot, side view" />
   <img src="images/maps.png" width="200" alt="The Patrol Map" /> 
 </p>
 
