@@ -1,0 +1,445 @@
+# ============================================================================
+# Nav2 NAVIGATION half for cat_patrol_robot (living_room_v1).
+# Localization half (map_server + amcl) is in amcl_params.yaml / Phase 2.
+# Adapted from yahboomcar_nav/params/dwa_nav_params.yaml for this robot:
+#   - costmaps consume /scan_filtered (trusted front arc), NOT /scan
+#   - strafe ENABLED (2026-07-11): MPPI motion_model=Omni, vy_max=0.10 — see
+#     FollowPath header below for why (closes the "lands beside the arrow"
+#     lateral-offset gap fast instead of a slow forward curve-in dance)
+#   - generous inflation + realistic footprint
+# ============================================================================
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # bt_navigator needs an ABSOLUTE path to the BT XML (a bare filename fails
+    # to open).
+    # default_nav_to_pose_bt_xml: custom tree (this package's config/), NOT the
+    # nav2_bt_navigator stock one. Root cause 2026-07-10: /scan_filtered is
+    # front-arc-only (~220 deg, see scan_front_filter), so the local costmap
+    # has no idea what's behind the robot. The stock BT's BackUp recovery
+    # action blindly reversed into an unseen object and nearly hit the rear
+    # antennas. This tree replaces BackUp with Spin (safe: rotates using the
+    # observed front arc, never blindly translates into unmapped space).
+    default_nav_to_pose_bt_xml: "/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/cat_patrol_robot/config/navigate_to_pose_no_blind_backup.xml"
+    # bt_navigator loads AND VALIDATES both trees at activation time (even though
+    # patrol_manager never sends a NavigateThroughPoses goal) — the stock file here
+    # also references "backup", which no longer has an action server. Must point at
+    # the no-blind-backup variant too, or bt_navigator fails to activate entirely.
+    default_nav_through_poses_bt_xml: "/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/cat_patrol_robot/config/navigate_through_poses_no_blind_backup.xml"
+    # plugin_lib_names left at the Nav2 defaults (the full stock list works);
+    # see dwa_nav_params.yaml if you need to pin the exact set.
+
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.001
+    # Was 0.5 — stale leftover from when vy_max was 0 (strafe off). This
+    # thresholds the *odometry-read* y-velocity fed back to MPPI as its
+    # current-state estimate each cycle (not the outgoing cmd_vel); with
+    # vy_max now 0.10 (strafe enabled, see FollowPath below), a 0.5 threshold
+    # would always report vy=0 to the controller regardless of actual motion.
+    min_y_velocity_threshold: 0.01
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      # PoseProgressChecker (not SimpleProgressChecker): credits in-place rotation
+      # as progress, not just XY displacement. Root-caused 2026-07-10 — large
+      # final-yaw waypoints (wp5/wp6, ~166-174°) made the robot legitimately
+      # grind through a slow final turn near a wall; SimpleProgressChecker is
+      # blind to rotation and kept firing "Failed to make progress" every
+      # ~10s, aborting + BT-retrying the goal from scratch over and over
+      # (26 abort/retry cycles across the two waypoints in one cycle).
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.5    # nav2 default (crawl-era 0.10 no longer needed)
+      required_movement_angle: 0.5     # ~29 deg rotation within the window also counts as progress
+      movement_time_allowance: 20.0    # extra headroom (was 10.0) for slow rotation in tight corners
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      # Loosened 0.15->0.20 (2026-07-10): SmacPlannerHybrid's grid quantization
+      # (esp. with downsample_costmap) can land the terminal path node correct
+      # in heading but a few cm to several cm LATERALLY off the true goal. A
+      # forward+rotate-only robot (no strafe, no reverse) closing a purely
+      # lateral gap needs an awkward curve-in/rotate/creep/rotate-back dance —
+      # slow and replan-heavy. A bit more tolerance avoids demanding that dance
+      # for a small quantization artifact.
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 0.25         # proper final heading — rotation works now
+                                       # (was 0.5 to dodge slick-floor spin; no longer needed)
+      stateful: True
+
+    # ========================================================================
+    # FALLBACK CONTROLLER: Regulated Pure Pursuit (RPP). Commented out.
+    # Rolls through every turn instead of point-turning in place. To restore:
+    # comment the MPPI block below, uncomment this block, restart T4 (no rebuild).
+    # ========================================================================
+    # FollowPath:
+    #   plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+    #   desired_linear_vel: 0.10          # crawl cruise
+    #   lookahead_dist: 0.4
+    #   min_lookahead_dist: 0.25
+    #   max_lookahead_dist: 0.6
+    #   lookahead_time: 1.5
+    #   use_velocity_scaled_lookahead_dist: false
+    #   transform_tolerance: 0.2
+    #   # --- THE fix: never point-turn; couple forward motion with turning ---
+    #   use_rotate_to_heading: false      # do NOT spin in place; arc instead
+    #   allow_reversing: false
+    #   # --- slow hard on tight curves to protect traction ---
+    #   use_regulated_linear_velocity_scaling: true
+    #   regulated_linear_scaling_min_radius: 0.6
+    #   regulated_linear_scaling_min_speed: 0.05
+    #   use_cost_regulated_linear_velocity_scaling: false
+    #   max_angular_accel: 0.5            # gentle rotational break-away
+    #   # --- gentle final approach ---
+    #   min_approach_linear_velocity: 0.03
+    #   approach_velocity_scaling_dist: 0.4
+    #   max_robot_pose_search_dist: 10.0
+    #   # --- collision checking along the projected arc ---
+    #   use_collision_detection: true
+    #   max_allowed_time_to_collision_up_to_carrot: 1.0
+
+    # ========================================================================
+    # FALLBACK CONTROLLER: tuned DWB (point-turns). Commented out.
+    # Uncomment this whole block AND comment the RPP FollowPath above to restore.
+    # ========================================================================
+    # FollowPath:
+    #   plugin: "dwb_core::DWBLocalPlanner"
+    #   debug_trajectory_details: True
+    #   min_vel_x: 0.0
+    #   min_vel_y: 0.0
+    #   max_vel_x: 0.10          # crawl — traction over speed on slick floor
+    #   max_vel_y: 0.0           # strafe OFF — rollers slip on smooth floor
+    #   max_vel_theta: 0.25      # minimal in-place spin
+    #   min_speed_xy: 0.0
+    #   max_speed_xy: 0.10
+    #   min_speed_theta: 0.0
+    #   acc_lim_x: 0.5
+    #   acc_lim_y: 0.0
+    #   acc_lim_theta: 0.10      # very gentle break-away
+    #   decel_lim_x: -0.5
+    #   decel_lim_y: 0.0
+    #   decel_lim_theta: -0.2
+    #   vx_samples: 20
+    #   vy_samples: 0
+    #   vtheta_samples: 40
+    #   sim_time: 1.5
+    #   linear_granularity: 0.05
+    #   angular_granularity: 0.025
+    #   transform_tolerance: 0.2
+    #   xy_goal_tolerance: 0.15
+    #   trans_stopped_velocity: 0.05
+    #   short_circuit_trajectory_evaluation: True
+    #   stateful: True
+    #   critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+    #   BaseObstacle.scale: 0.02
+    #   PathAlign.scale: 32.0
+    #   PathAlign.forward_point_distance: 0.1
+    #   GoalAlign.scale: 24.0
+    #   GoalAlign.forward_point_distance: 0.1
+    #   PathDist.scale: 32.0
+    #   GoalDist.scale: 24.0
+    #   RotateToGoal.scale: 32.0
+    #   RotateToGoal.slowing_factor: 10.0
+    #   RotateToGoal.lookahead_time: -1.0
+
+    # ========================================================================
+    # ACTIVE CONTROLLER: MPPI (Model Predictive Path Integral).
+    # Samples many forward-biased rollouts AND does real obstacle avoidance.
+    #
+    # NOTE: MPPI in Humble is CPU-vectorized (xtensor), NOT GPU-accelerated —
+    # it will not touch the Orin's GPU. Budget is CPU/RAM. batch_size /
+    # time_steps kept modest; watch `free -h` + a core's load (htop). Nav2 is
+    # the heaviest stack (OOM -9 risk, §8) — stop ollama before launching.
+    #
+    # POST-HARDWARE-FIX (Session 3): the mis-mounted rear wheels that made turns
+    # strafe are corrected, so in-place rotation AND arcs both work natively. The
+    # Session-2 anti-spin / crawl / reverse TEST hacks have been reverted to sane
+    # defaults below.
+    #
+    # STRAFE ENABLED (2026-07-11): motion_model=Omni, vy_max=0.10, vy_std=0.15.
+    # This robot is holonomic (mecanum) but MPPI was never letting it use vy —
+    # the "lands beside the arrow, right heading, wrong lateral offset, then
+    # grinds through a slow curve-in/rotate/creep dance" symptom (see
+    # phase4-status.md §11 "landed beside arrow") is exactly the case where a
+    # direct sideways nudge is the fast fix and forward-only motion is not.
+    # CAUTION carried over from Session 3 testing: mecanum rollers can slip on
+    # this smooth floor under lateral load — vy_max kept modest (0.10, well
+    # below vx_max 0.18) to limit slip risk; watch for drift/slip on the first
+    # live runs. Full Omni is enabled everywhere (not gated to near-goal only)
+    # per explicit choice — MPPI's own critics (GoalCritic/GoalAngleCritic
+    # activate within threshold_to_consider 0.5/0.3 m; PathAlignCritic/
+    # PathFollowCritic dominate during transit) already bias vy usage toward
+    # the final approach without a hard gate.
+    #   - allow REVERSE:  vx_min: -0.10 + PreferForwardCritic.enabled: false +
+    #     PathAngleCritic.mode: 1   (CAUTION: rear is lidar-blind — costmap is the
+    #     /scan_filtered front arc only; reverse can't see obstacles behind.)
+    #   - disable STRAFE: motion_model: "DiffDrive" + vy_max: 0.0 + vy_std: 0.0
+    # To flip to RPP/DWB: comment this block, uncomment a fallback above, restart T4.
+    # ========================================================================
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 30                 # horizon = time_steps * model_dt = 3.0 s
+      model_dt: 0.1                   # MUST be >= controller period (1/10 = 0.1)
+      batch_size: 1000               # modest for the 6-core Orin (default 2000)
+      vx_std: 0.15
+      vy_std: 0.15                   # strafe sampling ON (Omni)
+      wz_std: 0.2                    # standard yaw sampling
+      vx_max: 0.18                   # cautious cruise (home with cats); crawl no
+                                      # longer needed — turning traction is fixed.
+      vx_min: 0.0                    # forward-only (rear is lidar-blind; see header
+                                      # for how to allow reverse).
+      vy_max: 0.10                   # strafe ON (Omni); modest vs vx_max — mecanum
+                                      # slip risk on smooth floor, see header.
+      wz_max: 1.0                    # ~57 deg/s; in-place rotation works now.
+      iteration_count: 1
+      prune_distance: 1.5
+      transform_tolerance: 0.2
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "Omni"           # holonomic — strafe enabled (see header)
+      visualize: false
+      AckermannConstraints:
+        min_turning_r: 0.0
+      critics: ["ConstraintCritic", "GoalCritic", "GoalAngleCritic",
+                "PreferForwardCritic", "ObstaclesCritic", "PathAlignCritic",
+                "PathFollowCritic", "PathAngleCritic", "TwirlingCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.3
+      PreferForwardCritic:          # bias forward motion
+        enabled: true               # forward-only default; set false to allow reverse (see header)
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      ObstaclesCritic:
+        enabled: true
+        cost_power: 1
+        repulsion_weight: 1.5
+        critical_weight: 20.0
+        consider_footprint: false
+        collision_cost: 10000.0
+        collision_margin_distance: 0.10
+        near_goal_distance: 0.5
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        threshold_to_consider: 0.5
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.6
+      PathAngleCritic:
+        enabled: true
+        mode: 0                     # 0 = forward-direction preference. Set 1
+                                      # (NO_DIRECTIONAL_PREFERENCE) if allowing reverse (see header).
+        cost_power: 1
+        cost_weight: 2.0
+        threshold_to_consider: 0.4
+      TwirlingCritic:               # discourage aimless spin-in-place (dither)
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0           # nav2 default; rotation works now, this just
+                                      # prevents pointless twirling — MPPI still turns as needed.
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      robot_radius: 0.18
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan_filtered
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.1
+          obstacle_max_range: 2.5
+          raytrace_min_range: 0.0
+          raytrace_max_range: 3.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.25
+        cost_scaling_factor: 3.0
+      static_layer:
+        map_subscribe_transient_local: True
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      robot_radius: 0.18
+      resolution: 0.05
+      track_unknown_space: true
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan_filtered
+          obstacle_min_range: 0.1
+          obstacle_max_range: 2.5
+          raytrace_range: 3.0
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.25
+        cost_scaling_factor: 3.0
+      always_send_full_costmap: True
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 20.0
+    planner_plugins: ["GridBased"]
+    # REVERTED to NavfnPlanner 2026-07-11 (was SmacPlannerHybrid). SmacPlannerHybrid
+    # was adopted 2026-07-10 specifically because a non-holonomic robot has no way to
+    # fix a large final-heading error (e.g. wp5's 166°) except a slow post-arrival
+    # in-place turn — Hybrid-A* solved that by planning a loop-around approach in
+    # (x,y,heading) space, forward-only (DUBIN). That whole workaround assumed the
+    # robot COULDN'T strafe. Now that MPPI's FollowPath is Omni (see below,
+    # 2026-07-11), the robot can close position AND heading concurrently via a
+    # blended vx/vy/wz move — it no longer needs the planner to pre-solve
+    # orientation via a detour. Live symptom that motivated reverting: with
+    # SmacPlannerHybrid + Omni both active, a waypoint that was trivially "10 inches
+    # straight ahead, same heading" sometimes made the robot rotate and fail —
+    # PathAlignCritic (weight 14.0)/PathFollowCritic (weight 5.0) faithfully
+    # imitating a DUBIN-searched path that occasionally snapped to an unnecessary
+    # curve/rotation near the goal (grid quantization near a trivial goal can still
+    # produce a non-straight primitive), even though a direct strafe was available
+    # and shorter. NavfnPlanner is a pure (x,y) Dijkstra/A* search — obstacle-aware,
+    # heading-blind, always draws the shortest path to the position and leaves final
+    # orientation entirely to the controller. `PoseProgressChecker` (credits
+    # in-place rotation as progress, set 2026-07-10) plus Omni MPPI should now
+    # converge on final heading via blended strafe+rotate instead of the old
+    # forward-only post-arrival point-turn that used to stall on SimpleProgressChecker.
+    # Bonus: NavfnPlanner is far lighter than Hybrid-A* on this CPU-constrained Orin
+    # NX (Hybrid-A* was measured dropping to ~1.17Hz vs a 20Hz target).
+    # NOT YET TESTED LIVE. If wp5/wp6-style large-final-heading waypoints regress
+    # (stall/abort instead of just turning in place via Omni), that's the signal to
+    # revert this block and restore SmacPlannerHybrid below instead.
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+
+    # ========================================================================
+    # FALLBACK PLANNER: SmacPlannerHybrid (Hybrid-A*, x/y/heading search, DUBIN
+    # forward-only). Restore this (and comment NavfnPlanner above) if reverting to
+    # NavfnPlanner reintroduces the wp5/wp6 large-final-rotation stalls it was
+    # originally built to fix. Config-only, requires a T4 restart either way.
+    # ========================================================================
+    # GridBased:
+    #   plugin: "nav2_smac_planner/SmacPlannerHybrid"
+    #   tolerance: 0.5
+    #   allow_unknown: true
+    #   max_iterations: 1000000
+    #   max_on_approach_iterations: 1000
+    #   max_planning_time: 5.0
+    #   motion_model_for_search: "DUBIN"   # forward-only curves — no reverse (rear is lidar-blind)
+    #   angle_quantization_bins: 72        # 5 deg heading resolution
+    #   minimum_turning_radius: 0.10       # small: robot can rotate in place, this just
+    #                                      # bounds how tight Hybrid-A*'s analytic curves are
+    #   analytic_expansion_ratio: 3.5
+    #   analytic_expansion_max_length: 3.0
+    #   reverse_penalty: 2.0
+    #   change_penalty: 0.0
+    #   non_straight_penalty: 1.2
+    #   cost_penalty: 2.0
+    #   cache_obstacle_heuristic: false
+    #   debug_visualizations: false
+    #   downsample_costmap: false
+    #   downsampling_factor: 1
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    # "backup" intentionally NOT registered here (2026-07-10): with a front-arc-only
+    # costmap, BackUp would blindly reverse into whatever's behind the robot. No
+    # action server for it exists now, so it can't be invoked by any BT or by hand.
+    behavior_plugins: ["spin", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.3      # recovery spin also gentle (was 1.0) — same scrub problem
+    min_rotational_vel: 0.2      # (was 0.4)
+    rotational_acc_lim: 0.5      # gentle break-away for recovery spin (was 3.2)
+
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: false
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+lifecycle_manager_navigation:
+  ros__parameters:
+    use_sim_time: false
+    autostart: true
+    node_names:
+      - controller_server
+      - planner_server
+      - behavior_server
+      - bt_navigator
+      - waypoint_follower

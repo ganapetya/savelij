@@ -1,0 +1,71 @@
+# Host (peter-pen): Jazzy OS + this Humble image for wire-compatible ROS tools.
+# Copy this directory to ~/humble-docker on the host, then:
+#   xhost +local:root
+#   cd ~/humble-docker && sudo docker compose build --no-cache && sudo docker compose up -d rqt
+#
+# Requires on host:
+#   /home/bots/cyclonedds.xml   (host Wi-Fi interface name, AllowMulticast=spdp)
+
+services:
+  slam:
+    build: .
+    image: humble-tools
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DOMAIN_ID: "28"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      ROS_LOCALHOST_ONLY: "0"
+      CYCLONEDDS_URI: file:///cfg/cyclonedds.xml
+    volumes:
+      - /home/bots/cyclonedds.xml:/cfg/cyclonedds.xml:ro
+      - /home/bots/slam_params:/slam_params:ro
+    command: >
+      ros2 launch slam_toolbox online_async_launch.py
+      slam_params_file:=/slam_params/mapper_params_host.yaml
+      use_sim_time:=false
+
+  rviz:
+    build: .
+    image: humble-tools
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DOMAIN_ID: "28"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      ROS_LOCALHOST_ONLY: "0"
+      CYCLONEDDS_URI: file:///cfg/cyclonedds.xml
+      DISPLAY: "${DISPLAY:-:0}"
+      QT_QPA_PLATFORM: xcb
+      QT_X11_NO_MITSHM: "1"
+      AMENT_PREFIX_PATH: /opt/desc/yahboomcar_description:/opt/ros/humble
+    volumes:
+      - /home/bots/cyclonedds.xml:/cfg/cyclonedds.xml:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /home/bots/all/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_rviz/rviz:/rviz:ro
+      - /home/bots/all/yahboomcar_ws/install/yahboomcar_description:/opt/desc/yahboomcar_description:ro
+    devices:
+      - /dev/dri:/dev/dri
+    command: >
+      bash -lc "source /opt/ros/humble/setup.bash && ros2 run rviz2 rviz2"
+
+  # rqt_graph (and friends) — same image, GUI + DDS wiring pre-set
+  rqt:
+    build: .
+    image: humble-tools
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DOMAIN_ID: "28"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      ROS_LOCALHOST_ONLY: "0"
+      CYCLONEDDS_URI: file:///cfg/cyclonedds.xml
+      DISPLAY: "${DISPLAY:-:0}"
+      QT_QPA_PLATFORM: xcb
+      QT_X11_NO_MITSHM: "1"
+    volumes:
+      - /home/bots/cyclonedds.xml:/cfg/cyclonedds.xml:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    devices:
+      - /dev/dri:/dev/dri
+    command: ["/usr/local/bin/start.sh"]

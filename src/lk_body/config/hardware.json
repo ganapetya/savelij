@@ -1,0 +1,12 @@
+{
+  "speaker_sink": "alsa_output.usb-Solid_State_System_Co._Ltd._USB_PnP_Audio_Device_000000000000-00.analog-stereo",
+  "microphone": false,
+  "sway": {
+    "enabled": true,
+    "speed_m_s": 0.15,
+    "distance_cm": 8,
+    "hold_s": 1.25,
+    "left_sign": 1.0,
+    "ros_domain_id": 28
+  }
+}

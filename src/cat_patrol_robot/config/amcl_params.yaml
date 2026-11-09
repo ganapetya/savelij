@@ -1,0 +1,95 @@
+amcl:
+  ros__parameters:
+    use_sim_time: false
+
+    # --- Motion model ---
+    # OmnidirectionalMotionModel because X3 is mecanum (can strafe).
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    # alpha1-5: noise coefficients (rotation-from-rotation, rotation-from-translation,
+    # translation-from-translation, translation-from-rotation, strafe-from-translation).
+    # Start conservative (0.2); tighten if the cloud is too spread after a straight drive.
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+
+    # --- Laser model ---
+    scan_topic: /scan_filtered
+    laser_model_type: "likelihood_field"
+    laser_min_range: 0.15
+    laser_max_range: 8.0
+    max_beams: 60
+    laser_likelihood_max_dist: 2.0
+
+    # Beam weights (must sum to 1.0).
+    # z_hit: fraction explained by expected map wall.
+    # z_rand: random / unexplained returns (cats, glass, virtual walls we painted).
+    # z_max: beam went beyond max range (sensor missed).
+    # z_short: shorter than expected (moving obstacle in the way).
+    # Raise z_rand slightly vs defaults because our painted virtual walls
+    # produce real "through-wall" laser returns that don't match the map.
+    z_hit: 0.5
+    z_rand: 0.4
+    z_max: 0.05
+    z_short: 0.05
+    sigma_hit: 0.2
+    lambda_short: 0.1
+
+    # --- Particle filter ---
+    min_particles: 500
+    max_particles: 2000
+    pf_err: 0.05
+    pf_z: 0.99
+    resample_interval: 1
+
+    # --- Update thresholds ---
+    # Only update the filter after the robot has moved this much.
+    update_min_d: 0.25     # metres
+    update_min_a: 0.2      # radians (~11°)
+
+    # --- Frame ids (must match our TF tree) ---
+    global_frame_id: "map"
+    odom_frame_id: "odom"
+    base_frame_id: "base_footprint"
+    tf_broadcast: true     # AMCL publishes map → odom
+
+    # --- Initial pose = HOME (no RViz "2D Pose Estimate" needed) ---
+    # We always start a patrol from the same home spot, so seed AMCL there on
+    # startup instead of waiting for a manual pose in RViz. These x/y/yaw MUST
+    # match patrol_manager's home_pose ([0.331, -0.086, 0.043] on living_room_v1).
+    # RViz's 2D Pose Estimate still publishes /initialpose to override anytime.
+    set_initial_pose: true
+    initial_pose:
+      x: 0.331
+      y: -0.086
+      z: 0.0
+      yaw: 0.043
+
+    # --- Recovery ---
+    # Both 0.0 = no random particle injection (safe start).
+    # Set recovery_alpha_fast: 0.1 if the robot gets "lost" too easily.
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+
+    # --- Beam skip (filter out moving obstacles in scan) ---
+    do_beamskip: false
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+
+    transform_tolerance: 1.0
+    save_pose_rate: 0.5
+
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    yaml_filename: "/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/cat_patrol_robot/maps/living_room_v1.yaml"
+    topic_name: "map"
+    frame_id: "map"
+
+lifecycle_manager_localization:
+  ros__parameters:
+    use_sim_time: false
+    autostart: true
+    node_names: ["map_server", "amcl"]

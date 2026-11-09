@@ -1,0 +1,46 @@
+cat_voice:
+  ros__parameters:
+    detections_topic: "/cat_detector_cpp/detections"
+    voices_dir: "/home/jetson/cats/voices"
+    # Identity confidence must clear this bar before a line plays -- keeps
+    # a shaky low-confidence frame from picking the wrong cat's voice.
+    # Keep <= detector id_min_conf_brown so arik lines can still fire; white
+    # is gated harder in cat_detector_cpp (id_min_conf_white).
+    min_identity_conf: 0.55
+    # Minimum seconds between two lines for the SAME cat -- a lingering
+    # sighting shouldn't retrigger every frame. Also used as global
+    # any-cat cooldown (false jente then blocks arik). Prefer cutting FPs
+    # in the detector over shortening this too far.
+    cooldown_sec: 12.0
+
+    # Per-cat round-robin start index (0-based) into the sorted jente-*/arik-*
+    # playlists. Each successful play advances that cat's index and wraps.
+    voice_index_start: 0
+
+    # --- Startup audio readiness probe (USB voice card) ---
+    # Wait until Pulse default sink name contains ready_sink_match, play
+    # ready-chime through the same ffmpeg|paplay path as cat lines, then
+    # latch /cat_patrol/audio_ready. Until then, detection-triggered voice
+    # is suppressed (and patrol_manager will not drive if
+    # require_audio_ready=true).
+    #
+    # USB PnP Audio Device (JMTek 0c76:1203 / Solid State System):
+    #   ready_sink_match: "USB_PnP_Audio_Device"
+    # Legacy Bluetooth A2DP:
+    #   ready_sink_match: "bluez"
+    run_ready_probe: true
+    ready_sound_path: "/home/jetson/cats/voices/ready-chime.mp3"
+    audio_ready_topic: "/cat_patrol/audio_ready"
+    ready_timeout_sec: 90.0
+    ready_poll_sec: 1.0
+    ready_sink_match: "USB_PnP_Audio_Device"
+
+    # --- Background music (after ready-chime, between cat lines) ---
+    # Infinite loop (ffmpeg -stream_loop -1): when the file ends it restarts
+    # from the beginning. Paused while a cat voice line plays, then resumes
+    # near the same position. volume is ffmpeg linear gain (1.0 = unity).
+    bg_music_enabled: true
+    bg_music_path: "/home/jetson/cats/voices/cover1.mp3"
+    bg_music_volume: 1.0
+    # Cat talk lines: +10% vs previous unity playback.
+    voice_volume: 1.1

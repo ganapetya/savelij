@@ -1,0 +1,9 @@
+# After LiDAR is wired and /scan publishes, prefer Nav2 for robust patrol and return-home:
+# - Build or load a map (gmapping / cartographer / slam_toolbox).
+# - Start nav launch from yahboomcar_nav / yahboomcar_multi for your chassis.
+# - Replace raw cmd_vel patrol with rclcpp_action clients on:
+#     /navigate_to_pose (nav2_msgs/action/NavigateToPose)
+# - Store "home" as geometry_msgs/PoseStamped in the map frame.
+# See: yahboomcar_multi/param/X3_nav_robot1.yaml and navigation_launch.py
+
+patrol_nav2_placeholder: true

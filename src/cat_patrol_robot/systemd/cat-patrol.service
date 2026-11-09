@@ -1,0 +1,16 @@
+[Unit]
+Description=Cat patrol ROS2 (Yahboom bringup + patrol_node; 30 min cadence via patrol_period_sec in config)
+# Do not pair with a systemd timer that restarts this unit — that would start a second driver stack.
+# Edit CAT_PATROL_WS / CAT_PATROL_ROBOT to match this machine.
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=10
+Environment=CAT_PATROL_WS=%h/yahboomcar_ros2_ws/yahboomcar_ws
+Environment=CAT_PATROL_ROBOT=x3
+# EnvironmentFile=-%h/.config/cat_patrol/smtp.env
+ExecStart=%h/yahboomcar_ros2_ws/yahboomcar_ws/install/cat_patrol_robot/lib/cat_patrol_robot/run_cat_patrol.sh
+
+[Install]
+WantedBy=default.target

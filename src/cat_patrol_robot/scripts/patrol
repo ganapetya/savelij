@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# =============================================================================
+# patrol — one command to run the whole cat-patrol stack (Nav2 brain)
+# =============================================================================
+#
+#   patrol preflight     Run self-checks only (devices, map, SMTP, disk).
+#   patrol start [args]   Preflight, then launch patrol_system in the background.
+#   patrol stop           Stop the running stack (whole process group).
+#   patrol restart [args] stop, then start.
+#   patrol status         Is it running? Show ROS nodes + patrol_manager state.
+#   patrol logs           Tail the current run log.
+#
+# Extra args after `start`/`restart` pass straight to the launch file, e.g.
+#   patrol start use_rviz:=true
+#   patrol start use_voice:=false
+#
+# Config via env (same names as run_cat_patrol.sh):
+#   CAT_PATROL_WS     workspace (default: $HOME/yahboomcar_ros2_ws/yahboomcar_ws)
+#   CAT_PATROL_ROBOT  chassis   (default: x3)
+#   CAT_PATROL_FORCE  =1 to start even if preflight has FAILs (WARNs never block)
+#
+# "Plain bash" process management: start uses setsid so the whole launch tree
+# gets its own process group; stop kills that group. Survives SSH logout.
+# =============================================================================
+set -uo pipefail
+
+WS="${CAT_PATROL_WS:-$HOME/yahboomcar_ros2_ws/yahboomcar_ws}"
+ROBOT="${CAT_PATROL_ROBOT:-x3}"
+ROS_SETUP="/opt/ros/humble/setup.bash"
+# Extra overlay that contains astra_camera (the Astra driver lives in library_ws,
+# NOT the main workspace — see myscripts2/t6_camera.sh).
+LIB_WS_SETUP="${CAT_PATROL_LIB_WS:-$HOME/yahboomcar_ros2_ws/software/library_ws/install/setup.bash}"
+RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/cat_patrol"
+PID_FILE="$RUN_DIR/patrol.pid"
+LOG_DIR="$HOME/cat_patrol_data/logs"
+
+# --- DDS / middleware environment (must match myscripts2/t*.sh) --------------
+# The working stack runs on CycloneDDS, ROS_DOMAIN_ID=28, with a specific
+# CycloneDDS config + FastDDS mapping. We FORCE the domain (default 28) rather
+# than inherit a stray shell value (the login shell here defaults to 0, which
+# would silently isolate the stack from the rest of the graph).
+export ROS_DOMAIN_ID="${CAT_PATROL_DOMAIN_ID:-28}"
+export RMW_IMPLEMENTATION="${CAT_PATROL_RMW:-rmw_cyclonedds_cpp}"
+export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file:///home/jetson/cyclonedds.xml}"
+export FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-$WS/src/yahboomcar_bringup/param/fastdds_mapping.xml}"
+
+# Source ROS + both overlays (library_ws for astra, then the main workspace).
+SOURCE_ENV="source '$ROS_SETUP'; [ -f '$LIB_WS_SETUP' ] && source '$LIB_WS_SETUP'; source '$WS/install/setup.bash'"
+
+# Devices / files the launch actually uses (keep in sync with the launch defaults).
+LIDAR_BYID="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
+MAP_YAML="$WS/src/cat_patrol_robot/maps/living_room_v1.yaml"
+IMAGE_DIR="$HOME/cat_patrol_data"
+
+# ---- pretty output ----------------------------------------------------------
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_rst=$'\033[0m'
+_fail_count=0
+ok()   { printf '  %s[ OK ]%s %s\n'   "$c_grn" "$c_rst" "$1"; }
+warn() { printf '  %s[WARN]%s %s\n'   "$c_yel" "$c_rst" "$1"; }
+fail() { printf '  %s[FAIL]%s %s\n'   "$c_red" "$c_rst" "$1"; _fail_count=$((_fail_count+1)); }
+
+# ---- preflight self-checks ---------------------------------------------------
+preflight() {
+  _fail_count=0
+  echo "== patrol preflight (WS=$WS robot=$ROBOT) =="
+  echo "   DDS: ROS_DOMAIN_ID=$ROS_DOMAIN_ID RMW=$RMW_IMPLEMENTATION"
+
+  # ROS + workspaces
+  [[ -f "$ROS_SETUP" ]] && ok "ROS 2 Humble present" || fail "ROS 2 Humble setup.bash missing ($ROS_SETUP)"
+  [[ -f "$WS/install/setup.bash" ]] && ok "workspace overlay built" \
+    || fail "workspace not built ($WS/install/setup.bash) — run: colcon build"
+  [[ -f "$LIB_WS_SETUP" ]] && ok "library_ws overlay present (astra_camera)" \
+    || fail "library_ws overlay missing ($LIB_WS_SETUP) — Astra camera won't be found"
+
+  # DDS config (CycloneDDS URI points at a file:// path)
+  local dds_file="${CYCLONEDDS_URI#file://}"
+  if [[ "$RMW_IMPLEMENTATION" == "rmw_cyclonedds_cpp" ]]; then
+    [[ -f "$dds_file" ]] && ok "CycloneDDS config ($dds_file)" \
+      || warn "CYCLONEDDS_URI file missing ($dds_file) — DDS falls back to defaults"
+  fi
+
+  # LiDAR serial (by-id symlink preferred; fall back to raw ttyUSB0)
+  if [[ -e "$LIDAR_BYID" ]]; then ok "LiDAR serial ($(readlink -f "$LIDAR_BYID"))"
+  elif [[ -e /dev/ttyUSB0 ]];  then warn "LiDAR by-id symlink missing; /dev/ttyUSB0 exists (enumeration may have shifted)"
+  else fail "LiDAR serial not found (no $LIDAR_BYID and no /dev/ttyUSB0)"; fi
+
+  # Chassis MCU (launch default /dev/ttyUSB1; /dev/myserial is the safe udev alias)
+  if [[ -e /dev/myserial ]];   then ok "chassis MCU (/dev/myserial)"
+  elif [[ -e /dev/ttyUSB1 ]];  then warn "chassis MCU on /dev/ttyUSB1 (prefer stable /dev/myserial alias)"
+  else fail "chassis MCU serial not found (/dev/myserial or /dev/ttyUSB1)"; fi
+
+  # Astra camera (needs BOTH color 2bc5:050f and depth 2bc5:060f)
+  if command -v lsusb >/dev/null; then
+    local usb; usb="$(lsusb)"
+    grep -q '2bc5:050f' <<<"$usb" && ok "Astra color stream (2bc5:050f)" || fail "Astra color camera not on USB (2bc5:050f)"
+    grep -q '2bc5:060f' <<<"$usb" && ok "Astra depth stream (2bc5:060f)" || fail "Astra depth camera not on USB (2bc5:060f)"
+  else
+    warn "lsusb not available — cannot verify Astra camera"
+  fi
+
+  # Map for AMCL/Nav2
+  [[ -f "$MAP_YAML" ]] && ok "map file present ($(basename "$MAP_YAML"))" || fail "map file missing ($MAP_YAML)"
+
+  # Image/output dir + free space
+  if mkdir -p "$IMAGE_DIR" 2>/dev/null; then
+    local free_mb; free_mb="$(df -Pm "$IMAGE_DIR" | awk 'NR==2{print $4}')"
+    if [[ "${free_mb:-0}" -ge 200 ]]; then ok "output dir writable (${free_mb} MB free)"
+    else warn "low disk at $IMAGE_DIR (${free_mb} MB free)"; fi
+  else
+    fail "cannot create output dir ($IMAGE_DIR)"
+  fi
+
+  # SMTP (email won't send without these; not fatal to patrolling)
+  if [[ -n "${CAT_PATROL_SMTP_HOST:-}" && -n "${CAT_PATROL_SMTP_USER:-}" && -n "${CAT_PATROL_SMTP_PASSWORD:-}" ]]; then
+    ok "SMTP configured (CAT_PATROL_SMTP_*)"
+  else
+    warn "SMTP env not set — mail_node will skip sending (patrol still runs). Set CAT_PATROL_SMTP_HOST/USER/PASSWORD"
+  fi
+
+  echo
+  if [[ "$_fail_count" -gt 0 ]]; then
+    echo "${c_red}preflight: $_fail_count check(s) FAILED${c_rst}"
+    return 1
+  fi
+  echo "${c_grn}preflight: all critical checks passed${c_rst}"
+  return 0
+}
+
+# ---- process helpers ---------------------------------------------------------
+_running_pid() {  # echoes a live pgid if the stack is up, else nothing
+  [[ -f "$PID_FILE" ]] || return 1
+  local pid; pid="$(cat "$PID_FILE" 2>/dev/null)"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && { echo "$pid"; return 0; }
+  return 1
+}
+
+# Reap any leftover astra_camera/astra_camera_node and confirm it lets go of the USB.
+# ros2 launch can reparent a hung node to init (PPID 1), so it escapes the
+# process-group kill in stop(). While astra_camera/astra_camera_node lives it holds the
+# Astra depth sensor (2bc5:060f), and the next 'patrol start' fails with
+# "Could not open ... Resource busy!". Safety net: SIGINT it, wait for the
+# (slow) Astra SDK teardown, then SIGKILL if it is still wedged.
+_reap_camera() {
+  pgrep -f astra_camera/astra_camera_node >/dev/null || return 0
+  warn "leftover astra_camera/astra_camera_node found ($(pgrep -f astra_camera/astra_camera_node | tr '\n' ' ')) — reaping so it frees the USB"
+  pkill -INT -f astra_camera/astra_camera_node 2>/dev/null
+  for _ in $(seq 1 20); do pgrep -f astra_camera/astra_camera_node >/dev/null || break; sleep 0.5; done  # up to 10s
+  if pgrep -f astra_camera/astra_camera_node >/dev/null; then
+    warn "astra_camera/astra_camera_node did not exit on SIGINT; sending SIGKILL"
+    pkill -KILL -f astra_camera/astra_camera_node 2>/dev/null
+    sleep 1
+  fi
+  if pgrep -f astra_camera/astra_camera_node >/dev/null; then
+    fail "astra_camera/astra_camera_node STILL running — camera may keep holding the USB (2bc5:060f)"
+  else
+    ok "camera released (no astra_camera/astra_camera_node running)"
+  fi
+}
+
+# GUARANTEED motion stop: command zero velocity straight to the chassis MCU over
+# serial, bypassing the ROS graph. The Yahboom MCU LATCHES the last velocity it
+# was given and keeps driving the motors until it gets a new one. The driver
+# (Mcnamu_driver_X3) only sends set_car_motion(0,0,0) on a clean SIGINT/KeyboardInterrupt
+# (or its cmd_vel watchdog) — a SIGKILL skips both, so the robot keeps rolling
+# after the stack dies. This is the last-resort backstop for exactly that case.
+# Must run only AFTER the driver is dead: it holds the serial port open, and two
+# processes writing the port would interleave bytes. So reap a stray driver first.
+_mcu_stop_serial() {
+  local dev="${CAT_PATROL_MCU_DEV:-/dev/myserial}"
+  if [[ ! -e "$dev" ]]; then warn "MCU serial ($dev) not present — cannot send direct stop"; return 0; fi
+  if pgrep -f Mcnamu_driver_X3 >/dev/null; then
+    warn "chassis driver still alive; SIGKILL before taking the serial port"
+    pkill -KILL -f Mcnamu_driver_X3 2>/dev/null; sleep 1
+  fi
+  MCU_DEV="$dev" python3 - <<'PY'
+import os, sys, time
+dev = os.environ["MCU_DEV"]
+try:
+    from Rosmaster_Lib import Rosmaster
+    bot = Rosmaster(car_type=1, com=dev)
+    for _ in range(10):
+        bot.set_car_motion(0.0, 0.0, 0.0)   # vx, vy, wz — all zero
+        time.sleep(0.03)
+    del bot                                   # closes the serial port
+except Exception as e:
+    print("MCU direct stop FAILED: %s" % e); sys.exit(1)
+PY
+  if [[ $? -eq 0 ]]; then ok "MCU stopped (vx=vy=wz=0 sent on $dev)"
+  else fail "MCU direct stop FAILED on $dev — VERIFY THE ROBOT IS NOT MOVING"; fi
+}
+
+start() {
+  if pid="$(_running_pid)"; then
+    echo "Already running (pgid $pid). Use 'patrol stop' or 'patrol restart'."
+    return 1
+  fi
+  if ! preflight; then
+    if [[ "${CAT_PATROL_FORCE:-0}" == "1" ]]; then
+      warn "CAT_PATROL_FORCE=1 — starting despite preflight FAILs"
+    else
+      echo "Aborting. Fix the FAILs above, or set CAT_PATROL_FORCE=1 to override."
+      return 1
+    fi
+  fi
+
+  # RAM/display prep from t4_nav.sh (best-effort, non-interactive; never blocks).
+  # Nav2 + MPPI are the biggest memory users; keep a stray ollama model from
+  # OOM-killing controller_server. xhost lets RViz open if use_rviz:=true.
+  sudo -n systemctl stop ollama >/dev/null 2>&1 || true
+  xhost +local:root >/dev/null 2>&1 || true
+
+  mkdir -p "$RUN_DIR" "$LOG_DIR"
+  local log="$LOG_DIR/patrol_$(date +%Y%m%d_%H%M%S).log"
+  ln -sf "$log" "$LOG_DIR/latest.log"
+
+  echo "Starting patrol_system  (robot:=$ROBOT domain=$ROS_DOMAIN_ID ${*:-})"
+  echo "  log: $log"
+  # setsid → new session/process group we can kill as a unit. Detach stdio.
+  # DDS env is already exported above and inherited by the subshell.
+  setsid bash -c "
+    $SOURCE_ENV
+    exec ros2 launch cat_patrol_robot patrol_system.launch.py robot:=$ROBOT $*
+  " >"$log" 2>&1 </dev/null &
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+  sleep 2
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "Started (pgid $pid). Follow with: patrol logs"
+  else
+    echo "${c_red}Launch exited immediately — see $log${c_rst}"; tail -n 20 "$log"; return 1
+  fi
+}
+
+stop() {
+  local pid; pid="$(_running_pid)" || {
+    echo "Not running."; rm -f "$PID_FILE"
+    # Stack already gone (crash / manual kill) — the MCU may still be LATCHED and
+    # driving. Send the direct serial stop, then reap an orphaned camera.
+    _mcu_stop_serial
+    _reap_camera
+    return 0
+  }
+  echo "Stopping patrol_system (pgid $pid)..."
+
+  # SIGINT the whole PROCESS GROUP (not just the launch leader). This is what a
+  # terminal Ctrl-C does, and it matters for SAFETY: the chassis driver
+  # (Mcnamu_driver_X3) only zeroes the MCU on a clean SIGINT/KeyboardInterrupt.
+  # Signalling the group delivers SIGINT to the driver DIRECTLY, so the wheels
+  # stop immediately even if ros2 launch is slow to tear the tree down. (SIGTERM
+  # is avoided: launch's SIGTERM handler just orphans its children instead of
+  # shutting them down — see launch_service.py "_on_sigterm".)
+  kill -INT -"$pid" 2>/dev/null
+
+  # Wait up to 30s: the Astra SDK teardown (and Nav2 lifecycle shutdown) is slow.
+  local gone=0
+  for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || { gone=1; break; }; sleep 0.5; done
+
+  # Escalate only if launch is still alive after the graceful window. Wheels are
+  # already stopped by the group SIGINT above; this just cleans up laggards.
+  if [[ "$gone" -eq 0 ]]; then
+    warn "launch did not exit on SIGINT after 30s; escalating SIGTERM -> SIGKILL on the group"
+    kill -TERM -"$pid" 2>/dev/null
+    for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -KILL -"$pid" 2>/dev/null
+  fi
+
+  rm -f "$PID_FILE"
+
+  # GUARANTEED stop: even after a clean SIGINT (and especially after any SIGKILL
+  # escalation, which skips the driver's zero-velocity cleanup), command the MCU
+  # to zero directly over serial so a latched velocity can never keep the robot
+  # rolling. Then reap an orphaned camera so the next start isn't "Resource busy".
+  _mcu_stop_serial
+  _reap_camera
+
+  echo "Stopped."
+}
+
+status() {
+  if pid="$(_running_pid)"; then
+    echo "${c_grn}patrol_system RUNNING${c_rst} (pgid $pid)"
+  else
+    echo "${c_yel}patrol_system NOT running${c_rst}"
+    return 0
+  fi
+  source "$ROS_SETUP" 2>/dev/null
+  [ -f "$LIB_WS_SETUP" ] && source "$LIB_WS_SETUP" 2>/dev/null
+  source "$WS/install/setup.bash" 2>/dev/null
+  echo "   DDS: ROS_DOMAIN_ID=$ROS_DOMAIN_ID RMW=$RMW_IMPLEMENTATION"
+  echo "-- nodes --"; timeout 5 ros2 node list 2>/dev/null | sort || echo "  (no ROS graph response)"
+  echo "-- patrol_manager state --"
+  timeout 5 ros2 topic echo /patrol_manager/state std_msgs/msg/String --once 2>/dev/null \
+    | awk -F'"' '/data/{print "  "$2}' || echo "  (no state published yet)"
+}
+
+logs() { tail -n 100 -f "$LOG_DIR/latest.log"; }
+
+case "${1:-}" in
+  preflight) preflight ;;
+  start)     shift; start "$@" ;;
+  stop)      stop ;;
+  restart)   shift; stop; sleep 1; start "$@" ;;
+  status)    status ;;
+  logs)      logs ;;
+  *) echo "usage: patrol {preflight|start [args]|stop|restart [args]|status|logs}"; exit 2 ;;
+esac

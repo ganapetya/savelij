@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>odom_drift_checker</name>
+  <version>0.1.0</version>
+  <description>
+    Phase 0 diagnostic node for the cat-patrol robot.
+
+    Subscribes to /odom, integrates total path length, and logs accumulated
+    drift each time the robot returns near its starting pose. Used to
+    quantify wheel-odometry quality before SLAM / AMCL / Nav2 are added,
+    so later debugging never has to ask "is it the planner, the
+    localization, or the wheels?".
+
+    Single-file rclcpp node intended as a hands-on C++ / ROS 2 learning
+    exercise (subscriptions, timers, tf2_ros::Buffer + TransformListener,
+    std::optional, parameters).
+  </description>
+  <maintainer email="jetson@yahboom.local">jetson</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

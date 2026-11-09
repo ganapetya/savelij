@@ -1,13 +1,10 @@
 # yahboom_ws_peter
 
-Mirror of the **vendor + community** ROS 2 packages from the cat-patrol
-robot's workspace, *excluding* the two custom packages we maintain
-separately (`cat_patrol_robot/` and `odom_drift_checker/`).
+Mirror of the ROS 2 packages in the Yahboom robot workspace
+`~/yahboomcar_ros2_ws/yahboomcar_ws/src`, including `lk_body`,
+`cat_patrol_robot`, and `odom_drift_checker`.
 
-This repo exists so that a fresh checkout of the project is reproducible:
-clone this repo, drop it into `your_workspace/src/`, then clone
-`cat_patrol_robot/` and `odom_drift_checker/` alongside, and `colcon
-build` should produce the same workspace as the live robot.
+The robot is the source of the files. This repo only receives pushes.
 
 ## Layout
 
@@ -26,12 +23,16 @@ build` should produce the same workspace as the live robot.
 
 ## Sync workflow
 
-This repo is populated by running, on the host machine (not the robot):
+On this machine, from the repo root:
 
-    /opt/robots/cat_patrol_robot/scripts/sync_robot_to_host.sh
+    ./sync_from_robot.sh
 
-That script rsyncs the live workspace from the Jetson to the host mirror,
-then mirrors each package to the right place in `/opt/robots/`.
+That copies `jetson@192.168.0.120:~/yahboomcar_ros2_ws/yahboomcar_ws/src/`
+into `src/` here, commits whatever changed, and pushes to `origin/master`.
 
-Push-only: do NOT git-pull into this repo to bring changes back to the
-robot. Edits flow robot → host → git, never the other way.
+It does not fetch or pull. A non-fast-forward push stops without changing
+GitHub. Optional message: `./sync_from_robot.sh "why this sync"`.
+
+`build/`, `install/`, and `log/` inside the robot `src` tree are colcon
+output and are left behind. Files matched by `.gitignore` (large model
+files, `src/lk_body/.env`) are copied onto this machine and are not committed.

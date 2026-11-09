@@ -1,0 +1,7 @@
+{
+  "speaking": {
+    "action": "speaking_savelij",
+    "intent": "voice, and a side step that stays within 4 cm of home"
+  },
+  "stances": []
+}

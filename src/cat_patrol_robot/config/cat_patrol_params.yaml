@@ -1,0 +1,347 @@
+# =============================================================================
+# cat_patrol_params.yaml — All configurable parameters for the patrol robot
+# =============================================================================
+#
+# ROS 2 CONCEPT: PARAMETER FILES (YAML)
+#   ROS 2 nodes load parameters from YAML files.  This is how you change
+#   behavior WITHOUT recompiling C++ code.  Just edit the value, rebuild
+#   (or copy to install/), and relaunch.
+#
+#   YAML SYNTAX PRIMER:
+#     - Indentation matters (like Python) — use SPACES, never tabs.
+#     - "key: value" pairs separated by colon + space.
+#     - Strings: "text" (quotes optional unless it contains special chars)
+#     - Numbers: 0.2, 60.0, 12  (no quotes — YAML auto-detects type)
+#     - Booleans: true / false (lowercase, no quotes)
+#     - Comments: lines starting with #
+#
+# ROS 2 YAML STRUCTURE:
+#   The "/**:" prefix means "apply to ALL nodes loaded with this file."
+#   You can also target specific nodes:
+#     /patrol_node:
+#       ros__parameters:
+#         linear_speed: 0.3
+#
+#   "ros__parameters:" is a REQUIRED magic key that tells ROS 2 "the
+#   key-value pairs below are ROS parameters, not arbitrary YAML data."
+#   Note the DOUBLE underscore (__).
+#
+# HOW PARAMETERS FLOW:
+#   1. This YAML file sets defaults.
+#   2. The launch file can override specific parameters (see cat_patrol.launch.py).
+#   3. Command-line overrides work too:
+#        ros2 launch cat_patrol_robot cat_patrol.launch.py
+#          --ros-args -p linear_speed:=0.3
+#   4. At runtime, you can change some params:
+#        ros2 param set /patrol_node linear_speed 0.3
+#      (Note: the node must call get_parameter() again to see the new value;
+#       most nodes only read parameters at startup.)
+# =============================================================================
+
+/**:
+  ros__parameters:
+
+    # =========================================================================
+    # TOPIC NAMES — which ROS topics does the patrol node use?
+    # =========================================================================
+    # ROS 2 CONCEPT: TOPICS
+    #   Topics are named channels for messages.  A node PUBLISHES to a topic;
+    #   other nodes SUBSCRIBE to receive those messages.  Topic names start
+    #   with "/" for absolute names.  Without "/", the name is relative to
+    #   the node's namespace.
+    #
+    #   Example: the motor driver subscribes to /cmd_vel.  Our patrol_node
+    #   publishes Twist messages to /cmd_vel → the robot moves.
+
+    # Velocity commands sent to the motor driver
+    cmd_vel_topic: "/cmd_vel"
+
+    # Color camera input (Orbbec Astra publishes here)
+    # Message type: sensor_msgs/Image (raw pixel data, typically 640x480 rgb8)
+    image_topic: "/camera/color/image_raw"
+
+    # LiDAR scan input (optional — not all robots have LiDAR)
+    # Message type: sensor_msgs/LaserScan (array of distances at known angles)
+    scan_topic: "/scan"
+
+    # Buzzer control (Yahboom-specific: the onboard PCB buzzer)
+    # Message type: std_msgs/Bool (true = beep, false = silent)
+    # Note: no leading "/" because this is a relative topic name.
+    buzzer_topic: "Buzzer"
+
+    # Joystick manual override (true = human driving, autonomous stops)
+    joy_active_topic: "/JoyState"
+
+    # =========================================================================
+    # TF FRAME NAMES — coordinate frames for position tracking
+    # =========================================================================
+    # ROS 2 CONCEPT: TF FRAMES
+    #   TF (Transform Framework) tracks where things are in 3D space.
+    #   Frames are organized in a tree:
+    #     map → odom → base_footprint → camera_link
+    #                                → wheel_left
+    #                                → wheel_right
+    #
+    #   "odom" is the origin: where the robot THINKS it started.
+    #   "base_footprint" is the robot's center (on the ground plane).
+    #
+    #   The transform odom → base_footprint tells us:
+    #     "The robot is at position (x, y) with heading (yaw) relative
+    #      to where it started."
+    #
+    #   Odometry accumulates ERROR over time (wheel slip, etc.) — this is
+    #   called "drift."  For short patrols (< 10 meters), drift is small.
+    odom_frame: "odom"
+    base_frame: "base_footprint"
+
+    # =========================================================================
+    # FILE AND MAIL SETTINGS
+    # =========================================================================
+
+    # Directory where captured JPEG photos are saved (created automatically)
+    image_save_dir: "/tmp/cat_patrol_images"
+
+    # =========================================================================
+    # OBSTACLE DETECTION
+    # =========================================================================
+
+    # LiDAR obstacle stopping (requires a LiDAR sensor connected)
+    # The sllidar_ros2 driver is started by cat_patrol.launch.py (start_lidar:=auto),
+    # so /scan is available.  Setting this true wires patrol_node to subscribe and
+    # adds LiDAR as a second safety check alongside the depth-camera stop.
+    use_lidar_obstacle_stop: true
+    obstacle_min_range_m: 0.35       # Stop if LiDAR sees something closer (meters)
+    obstacle_sector_deg: 60.0        # Front cone width to monitor (degrees)
+
+    # Depth-camera obstacle detection (uses the Astra depth stream, no LiDAR needed)
+    # The depth image is a 2D grid where each pixel = distance in meters.
+    # We check a central region (depth_sector_width_ratio of the image) for
+    # the minimum distance.  If it's below depth_obstacle_min_m, we stop.
+    depth_image_topic: "/camera/depth/image_raw"
+    depth_obstacle_min_m: 0.80       # Stop if closer than 80 cm (was 0.50 — too tight for 0.2 m/s + chassis latency)
+    depth_sector_width_ratio: 0.33   # Check the central 33% of the depth image
+    # SAFETY: if no depth frame arrives within this age (sec), treat as obstacle
+    # so the robot does NOT drive blindly when the camera/driver is dead.
+    depth_max_age_sec: 1.5
+
+    # =========================================================================
+    # BATTERY MONITORING
+    # =========================================================================
+    # Yahboom X3 motor torque drops with battery voltage. Low battery causes
+    # wheels to slip during rotation, so physical turns fall short of odometry.
+    # The driver publishes voltage on the "voltage" topic (Float32) at ~10 Hz.
+    voltage_topic: "voltage"
+    low_voltage_warn_v: 11.0         # 3S Li-ion: warn below 11.0 V (nominal 11.1)
+
+    # =========================================================================
+    # PATROL PATTERN SELECTION
+    # =========================================================================
+    # Two patterns are available (Strategy pattern — see patrol_pattern.hpp):
+    #
+    # "classic"
+    #   Drives forward/backward for 4 legs, then takes photos using the
+    #   node's built-in capture_tick().  Uses LiDAR for obstacle stopping.
+    #
+    # "till_obstacle_back_images_turn"
+    #   Drives forward until depth camera sees obstacle, reverses to home,
+    #   takes 360° panoramic photos (closed-loop yaw control), emails them,
+    #   turns 180°, and idles.  All capture logic is inside the pattern.
+    patrol_pattern: "till_obstacle_back_images_turn"
+
+    # Timeouts for the till_obstacle_back pattern
+    forward_timeout_sec: 60.0        # Max seconds driving forward
+    drive_back_timeout_sec: 60.0     # Max seconds driving backward
+    odom_angular_scale: 0.95         # Passed to base_node_X3 angular_scale for yaw calibration
+                                     # (at scale=0.54 physical≈340° => 0.54*340/360≈0.51 to reach physical 360°)
+    pattern_log_buffer_period_sec: 60.0   # Keep pattern logs in RAM before flush
+    pattern_log_file_path: "/tmp/cat_patrol_pattern.log"  # Buffered pattern log file
+
+    # =========================================================================
+    # MOTION PARAMETERS
+    # =========================================================================
+    linear_speed: 0.2                # Forward/backward speed (m/s)
+    angular_speed: 0.5               # Turning speed (rad/s)
+    patrol_drive_sec: 2.0            # Duration per leg (classic pattern only)
+
+    # Main control loop frequency: 50 ms = 20 Hz.
+    # The patrol_timer_cb fires this often.  Lower = smoother control
+    # but more CPU usage.  20 Hz is a good balance for a ground robot.
+    patrol_timer_period_ms: 50
+
+    # =========================================================================
+    # PANORAMIC CAPTURE PARAMETERS
+    # =========================================================================
+    # These control the 360° photo sweep during the CaptureImages phase.
+    #
+    # MATH: for N photos across 360°, each step rotates 360°/N.
+    #   With N=12: each step = 30°.  After all 12 photos, the robot does
+    #   one final 30° rotation back to its starting heading (full circle).
+    capture_frame_count: 12          # Number of photos in the panoramic sweep
+    capture_turn_speed: 1.2          # Max rotation speed during capture (rad/s)
+                                     # (lowered from 3.0 to reduce overshoot/readjustment)
+    capture_rotate_sec: 0.3          # (Legacy/fallback) timed rotation per step
+
+    # =========================================================================
+    # CLOSED-LOOP ROTATION TUNING
+    # =========================================================================
+    # These parameters tune the proportional (P) controller used during the
+    # 360° capture rotation in the "till_obstacle_back_images_turn" pattern.
+    # The controller computes:  angular_velocity = clamp(Kp * error, -max, +max)
+    # where error = normalize(target_yaw - current_yaw).
+    #
+    # Together with capture_turn_speed, angular_speed, and capture_frame_count
+    # (defined above), these six values fully define the capture rotation
+    # behaviour.  Adjust them WITHOUT recompiling — just edit, reinstall
+    # the config, and relaunch.
+    #
+    # HOW THE 6 PARAMETERS INTERACT:
+    #   capture_frame_count  → how many photos in 360°; fewer = larger angular
+    #                          steps between shots, so the controller needs to
+    #                          cover bigger arcs.
+    #   capture_turn_speed   → absolute cap on angular velocity during capture
+    #                          rotation.  Higher = faster sweep but more
+    #                          overshoot risk.  Lower = slower but smoother.
+    #   angular_speed        → cap on angular velocity during return-home and
+    #                          general turning.  Higher = snappier turns.
+    #   capture_kp           → proportional gain (see below).
+    #   capture_min_angular_speed → motor stall floor (see below).
+    #   capture_yaw_tolerance     → "close enough" threshold (see below).
+    # -----------------------------------------------------------------
+
+    # Proportional gain for the yaw P-controller during capture rotation.
+    #   angular_velocity = clamp(capture_kp * yaw_error, ±capture_turn_speed)
+    #
+    # INCREASE (e.g. 3.0–4.0):
+    #   + Faster reaction to yaw error — reaches target heading sooner
+    #   − May overshoot and oscillate around the target, causing jitter
+    # DECREASE (e.g. 1.0–1.5):
+    #   + Smoother, more gentle approach to each target heading
+    #   − Slower convergence — capture sweep takes longer
+    #   − Very low values may keep the speed below the stall floor for
+    #     most of the rotation, producing jerky bang-bang behaviour
+    capture_kp: 1.0                  # Gentler approach (was 2.0; reduces overshoot/readjustment)
+
+    # Minimum angular speed (rad/s) sent to the motors during capture
+    # rotation.  If the P-controller computes a speed below this value,
+    # the speed is raised to this floor (keeping the original sign/direction).
+    # This prevents MOTOR STALL — at very low command velocities the motors
+    # don't generate enough torque to overcome friction and the robot
+    # doesn't move at all.
+    #
+    # INCREASE (e.g. 0.20–0.30):
+    #   + Guarantees motion even on high-friction surfaces or with weak batteries
+    #   − Coarser final approach to target yaw — the robot "jumps" in bigger
+    #     increments near the target, reducing angular precision
+    # DECREASE (e.g. 0.08–0.12):
+    #   + Finer positioning near the target — smoother final alignment
+    #   − Risk of stall: if the value is below the motor's real deadband,
+    #     the robot will command motion but the wheels won't actually turn
+    # The right value depends on your specific hardware; 0.15 is a safe
+    # starting point for the Yahboom X3Plus mecanum chassis.
+    capture_min_angular_speed: 0.15
+
+    # Yaw tolerance (radians) — how close the robot's heading must be to
+    # the target before it considers the rotation "done" and takes the
+    # next photo.  0.10 rad ≈ 5.7°.
+    # This is intentionally TIGHTER than yaw_tolerance_rad (0.2 rad ≈ 11°)
+    # used for return-home, because evenly-spaced panoramic photos require
+    # more angular precision.
+    #
+    # INCREASE (e.g. 0.15–0.25):
+    #   + Reaches "close enough" faster — quicker capture cycle
+    #   − Photos are less evenly spaced; visible gaps or overlaps in the
+    #     panorama, especially with fewer frames (capture_frame_count < 12)
+    # DECREASE (e.g. 0.04–0.08):
+    #   + More precise angular spacing — better panorama coverage
+    #   − Takes longer to settle at each target; may oscillate if Kp is
+    #     high and the min-speed floor is large relative to the tolerance
+    #   − On hardware with noisy odometry the robot may never fully
+    #     converge, causing step timeouts
+    capture_yaw_tolerance: 0.02          # Tightened back from 0.04; with kp=1.0/turn_speed=1.2 no hunting.
+                                         # NOTE: tolerance=0.04 × 12 steps wasted ~24° of physical rotation.
+    capture_completion_extra_deg: 0.0    # No artificial extra final rotation compensation
+
+    # =========================================================================
+    # RETURN-HOME NAVIGATION
+    # =========================================================================
+    return_home_max_time_sec: 120.0  # Give up after 2 minutes
+    position_tolerance_m: 0.15       # "Close enough" to home (15 cm)
+    yaw_tolerance_rad: 0.05           # "Close enough" heading (≈11 degrees)
+
+    # =========================================================================
+    # PATROL CYCLE TIMING
+    # =========================================================================
+    # After finishing one patrol cycle, the robot waits this long before
+    # starting the next one.  180s = 3 minutes for testing.
+    # For production / real cat watching, increase to 1800 (30 min) or more.
+    patrol_period_sec: 180.0
+
+    # If true, rclcpp::shutdown() after first return-home.  Useful for testing:
+    # run one patrol, check the results, stop.  Avoid using with systemd
+    # timers that relaunch full bringup — that would start a second robot stack.
+    exit_after_one_cycle: false
+
+    # Start patrolling immediately when the node launches?
+    # (May be overridden by the launch file based on robot:=none)
+    start_patrol_on_boot: true
+
+    # Auto-repeat patrols?  If true, a timer fires every patrol_period_sec
+    # and starts a new patrol cycle when idle.
+    loop_patrol: true
+
+    # Respect joystick override?  If true and /JoyState publishes true,
+    # the robot stops all autonomous movement until joystick is released.
+    use_joy_override: false
+
+    # =========================================================================
+    # COMPLETION SOUND + BLUETOOTH SPEAKER (RX-V485 3BF25C)
+    # =========================================================================
+    # On patrol_node startup: scan, pair, and connect the BT speaker, route
+    # PulseAudio to it, then play bark.wav once ("robot ready").
+    # After each patrol cycle (180° turn done): play bark.wav again.
+    #
+    # Speaker seen in scan: "RX-V485 3BF25C Bluetooth" MAC 0C:8E:29:3B:F2:5F
+    # Power the speaker on and put it in pairing mode before starting the robot.
+    #
+    # ONE-TIME SETUP (Yahboom Jetson): NVIDIA disables BT audio by default.
+    # If connect fails with "No bluez PulseAudio sink", run:
+    #   sudo bash install/cat_patrol_robot/lib/cat_patrol_robot/enable_bt_a2dp.sh
+    completion_sound_path: "/home/jetson/bark.wav"
+    completion_sound_player: "paplay"    # used only if BT connect is disabled
+    bt_connect_on_start: true
+    bt_speaker_mac: "0C:8E:29:3B:F2:5F"
+    bt_speaker_name: "RX-V485"           # fallback if MAC not in device list yet
+    bt_scan_seconds: 40
+    bt_connect_script: ""              # empty = auto: install/.../connect_bt_speaker.sh
+
+    # =========================================================================
+    # EMAIL SETTINGS
+    # =========================================================================
+    # The patrol_node publishes a JSON string on this topic.  The mail_node
+    # (Python) subscribes and sends the email.  SMTP credentials are set
+    # via environment variables (see mail_node.py header for details).
+    mail_request_topic: "/cat_patrol/mail_request"
+    mail_subject: "Cat patrol photos"
+    smtp_to_address: "peter.botnet@gmail.com"
+
+    # --- Extra snapshot emails (all reuse the mail_subject above as a prefix) ---
+    # One snapshot at the START and the END of every patrol loop.
+    loop_boundary_mail_enabled: true
+    # One snapshot when cat_detector_cpp recognizes a white/brown cat DURING a
+    # patrol. Reads the identity from results[1] on detections_topic. The 360°
+    # capture-at-waypoint email is unaffected and still sent as before.
+    detections_topic: "/cat_detector_cpp/detections"
+    cat_recognized_mail_enabled: true
+    cat_recognized_min_conf: 0.6      # Identity confidence bar before emailing
+    cat_recognized_cooldown_sec: 30.0 # Min seconds between emails for the SAME cat
+
+    # =========================================================================
+    # CAT DETECTION (optional, advanced)
+    # =========================================================================
+    # When enabled, if an external node publishes true on cat_detected_topic
+    # during patrol, the robot interrupts its pattern and creeps toward the
+    # cat (CatApproach state).  Disabled by default.
+    cat_detection_enabled: false
+    cat_detected_topic: "/cat_patrol/cat_detected"
+    approach_linear_speed: 0.1       # How fast to creep toward cat (m/s)
+    approach_max_sec: 15.0           # Give up after 15 seconds
