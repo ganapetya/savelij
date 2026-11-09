@@ -33,7 +33,8 @@ is the source of those files. This repo only receives pushes.
 
 ## Sync workflow
 
-On this machine, from the repo root:
+On this machine, from the repo root. `sync_from_robot.sh` stays on the
+host and is not part of this repository:
 
     ./sync_from_robot.sh
 
