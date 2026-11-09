@@ -1,25 +1,35 @@
-# yahboom_ws_peter
+# Savelij
 
-Mirror of the ROS 2 packages in the Yahboom robot workspace
-`~/yahboomcar_ros2_ws/yahboomcar_ws/src`, including `lk_body`,
-`cat_patrol_robot`, and `odom_drift_checker`.
+<p align="left">
+  <img src="src/images/savelij.jpg" width="280" alt="Savelij" />
+</p>
 
-The robot is the source of the files. This repo only receives pushes.
+Savelij is an indoor robot on a Yahboom ROSMASTER X3 mecanum chassis. A
+Jetson Orin NX on the robot runs Ubuntu and ROS 2 Humble and does the
+sensing, driving, and navigation. It carries a SLAMTEC RPLiDAR A1 and an
+Orbbec Astra depth camera. The chassis board runs the motors, encoders, and
+IMU. The robot patrols rooms on its own, looks for cats, and can bark at one
+when it sees it.
+
+This repository is the robot's ROS 2 workspace,
+`~/yahboomcar_ros2_ws/yahboomcar_ws/src`, copied from the Jetson. The robot
+is the source of those files. This repo only receives pushes.
 
 ## Layout
 
-    yahboom_ws_peter/
+    savelij/
     └── src/
-        ├── yahboomcar_bringup/        ← Yahboom vendor (with our
-        │                                 trim-parameter modifications;
-        │                                 see cat_patrol_robot/yahboom_overlay
-        │                                 for the patch record)
-        ├── yahboomcar_base_node/      ← Yahboom vendor (C++ odometry integrator)
-        ├── yahboomcar_description/    ← Yahboom vendor (URDFs and meshes)
-        ├── yahboomcar_msgs/           ← Yahboom vendor (message types)
-        └── ...                        ← all other yahboomcar_* packages
-                                          plus laserscan_to_point_pulisher,
-                                          robot_pose_publisher_ros2, etc.
+        ├── images/savelij.jpg
+        ├── lk_body/
+        ├── cat_patrol_robot/
+        ├── odom_drift_checker/
+        ├── yahboomcar_bringup/
+        ├── yahboomcar_base_node/
+        ├── yahboomcar_description/
+        ├── yahboomcar_msgs/
+        └── ...                    ← the other yahboomcar_* packages,
+                                      laserscan_to_point_pulisher,
+                                      robot_pose_publisher_ros2, and so on
 
 ## Sync workflow
 
