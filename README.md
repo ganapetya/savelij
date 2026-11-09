@@ -28,7 +28,8 @@ On this machine, from the repo root:
     ./sync_from_robot.sh
 
 That copies `jetson@192.168.0.120:~/yahboomcar_ros2_ws/yahboomcar_ws/src/`
-into `src/` here, commits whatever changed, and pushes to `origin/master`.
+into `src/` here, commits whatever changed, and pushes branch `master` to
+`git@github.com:ganapetya/savelij.git`.
 
 It does not fetch or pull. A non-fast-forward push stops without changing
 GitHub. Optional message: `./sync_from_robot.sh "why this sync"`.

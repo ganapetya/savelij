@@ -7,6 +7,7 @@ set -euo pipefail
 
 ROBOT_HOST="${YAHBOOM_HOST:-jetson@192.168.0.120}"
 ROBOT_SRC="${YAHBOOM_SRC:-/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/}"
+REMOTE_URL="${YAHBOOM_REMOTE:-git@github.com:ganapetya/savelij.git}"
 BRANCH="${YAHBOOM_BRANCH:-master}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +22,12 @@ current="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$current" != "$BRANCH" ]]; then
   echo "error: checkout is on '$current', expected '$BRANCH'" >&2
   exit 1
+fi
+
+if git remote get-url origin >/dev/null 2>&1; then
+  git remote set-url origin "$REMOTE_URL"
+else
+  git remote add origin "$REMOTE_URL"
 fi
 
 echo "rsync ${ROBOT_HOST}:${ROBOT_SRC} -> ${ROOT}/src/"
@@ -39,16 +46,15 @@ rsync -az --delete \
 git add -A
 
 if git diff --cached --quiet; then
-  echo "No changes. Nothing to push."
-  exit 0
-fi
-
-if [[ $# -gt 0 ]]; then
-  msg="$*"
+  echo "No local changes."
 else
-  msg="sync from yahboom $(date -Iseconds)"
+  if [[ $# -gt 0 ]]; then
+    msg="$*"
+  else
+    msg="sync from yahboom $(date -Iseconds)"
+  fi
+  git commit -m "$msg"
 fi
 
-git commit -m "$msg"
 git push origin "$BRANCH"
-echo "Pushed to origin/${BRANCH}."
+echo "Pushed to ${REMOTE_URL} (${BRANCH})."
