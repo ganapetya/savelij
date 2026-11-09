@@ -97,75 +97,25 @@ def main() -> None:
         raise SystemExit(1)
     node = LkBody()
     try:
-        asyncio.run(_dial(node, url, token))
+        from lk_body.session import run as run_session
+
+        async def _on_speak(down: bool, socket) -> None:
+            del down, socket
+            log.info("microphone is not used")
+
+        asyncio.run(run_session(
+            url,
+            token,
+            "savelij",
+            _register(node),
+            node.startup_status,
+            node.enqueue,
+            _on_speak,
+            lambda callback: setattr(node, "_on_played", callback),
+            lambda: not node._closed.is_set(),
+        ))
     finally:
         node.shutdown()
-
-
-async def _dial(node: LkBody, url: str, token: str) -> None:
-    import websockets
-
-    while not node._closed.is_set():
-        try:
-            async with websockets.connect(url, open_timeout=10) as socket:
-                await _session(node, socket, token)
-        except Exception as exc:
-            log.warning("dial failed: %s", type(exc).__name__)
-            await asyncio.sleep(2)
-
-
-async def _session(node: LkBody, socket, token: str) -> None:
-    await socket.send(json.dumps({"type": "attach", "body_id": "savelij", "token": token}))
-    attached = json.loads(await socket.recv())
-    if attached.get("type") != "attached":
-        log.warning("attach refused: %s", attached.get("reason", ""))
-        return
-    await socket.send(json.dumps(_register(node)))
-    registered = json.loads(await socket.recv())
-    if registered.get("type") != "registered":
-        log.warning("register failed")
-        return
-    config = json.loads(await socket.recv())
-    if config.get("type") != "config":
-        log.warning("missing config")
-        return
-    ready, reason = node.startup_status()
-    await socket.send(json.dumps({"type": "status", "ready": ready, "reason": reason}))
-    log.info("ready %s", ready)
-    notes: asyncio.Queue = asyncio.Queue()
-    loop = asyncio.get_running_loop()
-
-    def notify() -> None:
-        loop.call_soon_threadsafe(notes.put_nowait, None)
-
-    node._on_played = notify
-
-    async def announce() -> None:
-        while True:
-            await notes.get()
-            await socket.send(json.dumps({"type": "played"}))
-
-    announcer = asyncio.create_task(announce())
-    try:
-        await _turns(node, socket)
-    finally:
-        node._on_played = None
-        announcer.cancel()
-
-
-async def _turns(node: LkBody, socket) -> None:
-    while True:
-        raw = await socket.recv()
-        message = json.loads(raw)
-        kind = message.get("type")
-        if kind == "speak":
-            log.info("microphone is not used")
-        elif kind == "delivery":
-            pcm = base64.b64decode(message.get("pcm") or "")
-            node.enqueue(pcm, message.get("actions"), str(message.get("language") or ""))
-        elif kind == "config":
-            ready, reason = node.startup_status()
-            await socket.send(json.dumps({"type": "status", "ready": ready, "reason": reason}))
 
 
 def _register(node: LkBody) -> dict:
